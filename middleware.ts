@@ -17,6 +17,9 @@ export async function middleware(request: NextRequest) {
         },
       });
     }
+
+    // Skip Supabase authentication for API routes
+    return NextResponse.next();
   }
 
   // For all other routes, use Supabase authentication
