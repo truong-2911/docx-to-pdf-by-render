@@ -18,8 +18,7 @@ app.post('/convert', upload.single('file'), (req, res) => {
 
   fs.mkdirSync(outputDir, { recursive: true });
 
-  // Đường dẫn LibreOffice (có thể chỉnh lại nếu bạn cài ở nơi khác)
-  const libreOfficePath = `"C:\\Program Files\\LibreOffice\\program\\soffice.exe"`;
+  const libreOfficePath = 'soffice';
 
   const command = `${libreOfficePath} --headless --convert-to pdf "${inputPath}" --outdir "${outputDir}"`;
 
