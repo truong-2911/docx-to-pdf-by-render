@@ -27,7 +27,7 @@ app.post('/convert', upload.single('file'), (req, res) => {
     if (err) {
       console.error(stderr);
       return res.status(500).send('Conversion failed');
-    }
+    } 
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename=converted.pdf');
