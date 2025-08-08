@@ -1,13 +1,15 @@
-FROM ubuntu:22.04
+FROM node:18-bullseye
 
+# Cài LibreOffice và các tiện ích
 RUN apt-get update && \
-    apt-get install -y libreoffice curl unzip nodejs npm && \
+    apt-get install -y libreoffice curl unzip && \
     apt-get clean
 
+# App code
 WORKDIR /app
 
 COPY . .
 
 RUN npm install
 
-CMD ["npm", "start"]
+CMD ["node", "server.js"]
