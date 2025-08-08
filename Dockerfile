@@ -1,11 +1,10 @@
-FROM node:18-bullseye
+FROM node:20-bullseye
 
-# Cài LibreOffice và các tiện ích
+# Cài LibreOffice và các gói phụ thuộc
 RUN apt-get update && \
     apt-get install -y libreoffice curl unzip && \
     apt-get clean
 
-# App code
 WORKDIR /app
 
 COPY . .

@@ -18,7 +18,7 @@ app.post('/convert', upload.single('file'), (req, res) => {
 
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const libreOfficePath = 'soffice';
+  const libreOfficePath = 'soffice'; // ✅ Linux-compatible
 
   const command = `${libreOfficePath} --headless --convert-to pdf "${inputPath}" --outdir "${outputDir}"`;
 
@@ -26,7 +26,7 @@ app.post('/convert', upload.single('file'), (req, res) => {
     if (err) {
       console.error(stderr);
       return res.status(500).send('Conversion failed');
-    } 
+    }
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'attachment; filename=converted.pdf');
