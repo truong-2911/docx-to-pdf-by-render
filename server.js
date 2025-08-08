@@ -1,0 +1,40 @@
+const express = require('express');
+const multer = require('multer');
+const { exec } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const cors = require('cors');
+
+const app = express();
+const upload = multer({ dest: 'uploads/' });
+
+app.use(cors());
+
+app.post('/convert', upload.single('file'), (req, res) => {
+  const inputPath = path.resolve(req.file.path);
+  const outputDir = path.resolve('./converted');
+  const outputFileName = req.file.filename + '.pdf';
+  const outputPath = path.join(outputDir, outputFileName);
+
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  // Đường dẫn LibreOffice (có thể chỉnh lại nếu bạn cài ở nơi khác)
+  const libreOfficePath = `"C:\\Program Files\\LibreOffice\\program\\soffice.exe"`;
+
+  const command = `${libreOfficePath} --headless --convert-to pdf "${inputPath}" --outdir "${outputDir}"`;
+
+  exec(command, (err, stdout, stderr) => {
+    if (err) {
+      console.error(stderr);
+      return res.status(500).send('Conversion failed');
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename=converted.pdf');
+    fs.createReadStream(outputPath).pipe(res);
+  });
+});
+
+app.listen(3000, () => {
+  console.log('Server is running on http://localhost:3000');
+});
