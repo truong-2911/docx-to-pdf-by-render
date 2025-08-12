@@ -1,6 +1,6 @@
-// middleware.ts
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { updateSession } from "@/lib/supabase/middleware";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -11,17 +11,29 @@ const corsHeaders = {
 };
 
 export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  if (request.method === "OPTIONS") {
+    return new NextResponse(null, { status: 204, headers: corsHeaders });
+  }
 
-  // ✅ Bypass hoàn toàn cho các route chuyển đổi
-  if (pathname.startsWith("/api/convert") || pathname.startsWith("/api/map-data-and-convert")) {
-    if (request.method === "OPTIONS") {
-      return new NextResponse(null, { status: 204, headers: corsHeaders });
+  console.log(request.nextUrl.pathname);
+  if (
+    request.nextUrl.pathname.startsWith("/api/convert") ||
+    request.nextUrl.pathname.startsWith("/api/map-data-and-convert")
+  ) {
+    const apiKey =
+      request.headers.get("x-api-key") ||
+      request.nextUrl.searchParams.get("x-api-key");
+    const expectedApiKey = process.env.ZC_SECRET;
+    console.log(apiKey, expectedApiKey);
+    if (!apiKey || apiKey !== expectedApiKey) {
+      return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     return NextResponse.next();
   }
-
-  // ... phần còn lại giữ nguyên như bạn có
+  return await updateSession(request);
 }
 
 export const config = {
