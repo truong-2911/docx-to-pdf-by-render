@@ -10,20 +10,25 @@ const corsHeaders = {
   "Access-Control-Expose-Headers": "X-Conversation-State",
 };
 
+console.log("=== Middleware file loaded ===");
+
 export async function middleware(request: NextRequest) {
+  console.log("middleware hit");
   if (request.method === "OPTIONS") {
     return new NextResponse(null, { status: 204, headers: corsHeaders });
   }
 
   console.log(request.nextUrl.pathname);
   if (
-    request.nextUrl.pathname.startsWith("/api/convert") ||
-    request.nextUrl.pathname.startsWith("/api/map-data-and-convert")
+    request.nextUrl.pathname.includes("/api/convert") ||
+    request.nextUrl.pathname.includes("/api/map-data-and-convert")
   ) {
+    console.log("api hit");
     const apiKey =
       request.headers.get("x-api-key") ||
       request.nextUrl.searchParams.get("x-api-key");
     const expectedApiKey = process.env.ZC_SECRET;
+    console.log("api key", apiKey);
     console.log(apiKey, expectedApiKey);
     if (!apiKey || apiKey !== expectedApiKey) {
       return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
@@ -37,7 +42,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
-  ],
+  matcher: ["/api/:path*"],
 };
+
