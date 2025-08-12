@@ -35,6 +35,7 @@ export async function POST(req: NextRequest) {
   let loWorkDir: string | undefined;
 
   try {
+    console.log("api hit");
     const { file } = await parseMultipartToTmp(req, { fieldName: "file", maxFileSize: 200 * 1024 * 1024 });
     if (!file) return json(400, { error: "file is required" });
 
