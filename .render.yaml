@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: insight-render
+    env: docker
+    plan: standard         # khuyến nghị 2GB RAM
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: ZC_SECRET
+        sync: false        # nhập tại Render (API key middleware)
+      - key: ENABLE_IMAGE_COMPRESSION
+        value: "true"
+      - key: COMPRESS_THRESHOLD_MB
+        value: "15"
+      - key: IMG_MAX_WIDTH
+        value: "1800"
+      - key: IMG_MAX_HEIGHT
+        value: "1800"
+      - key: IMG_QUALITY
+        value: "75"
+      - key: IMG_MIN_BYTES
+        value: "200000"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"

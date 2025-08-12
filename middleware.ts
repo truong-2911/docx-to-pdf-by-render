@@ -1,41 +1,42 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { updateSession } from "@/utils/supabase/middleware";
+import { updateSession } from "@/lib/supabase/middleware";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS,PATCH",
+  "Access-Control-Allow-Headers":
+    "Content-Type, x-api-key, x-vercel-protection-bypass, X-Conversation-State, x-conversation-state",
+  "Access-Control-Expose-Headers": "X-Conversation-State",
+};
 
 export async function middleware(request: NextRequest) {
-  // Check if the request is for Zoho Creator API routes
-  if (request.nextUrl.pathname.startsWith("/api/zoho/")) {
-    const apiKey = request.headers.get("x-api-key");
-    const expectedApiKey = process.env.ZC_SECRET;
+  if (request.method === "OPTIONS") {
+    return new NextResponse(null, { status: 204, headers: corsHeaders });
+  }
 
-    // If no API key is provided or it doesn't match, return 401
+  console.log(request.nextUrl.pathname);
+  if (
+    request.nextUrl.pathname.startsWith("/api/convert") ||
+    request.nextUrl.pathname.startsWith("/api/map-data-and-convert")
+  ) {
+    const apiKey =
+      request.headers.get("x-api-key") ||
+      request.nextUrl.searchParams.get("x-api-key");
+    const expectedApiKey = process.env.ZC_SECRET;
     if (!apiKey || apiKey !== expectedApiKey) {
       return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-
-    // Skip Supabase authentication for API routes
     return NextResponse.next();
   }
-
-  // For all other routes, use Supabase authentication
   return await updateSession(request);
 }
 
-// Configure which routes the middleware should run on
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * Feel free to modify this pattern to include more paths.
-     */
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
