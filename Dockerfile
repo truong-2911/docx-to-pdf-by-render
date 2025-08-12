@@ -23,6 +23,9 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
+# Quan trọng: Railway gán PORT động. Next standalone server.js đọc PORT và HOSTNAME.
+ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
-# Next standalone generate server.js ở root của artefact
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD curl -fsS http://127.0.0.1:${PORT:-3000}/health || exit 1
+
 CMD ["node","server.js"]
