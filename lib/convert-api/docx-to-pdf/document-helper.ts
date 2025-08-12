@@ -51,7 +51,7 @@ function makeGetters() {
 
           // Tối ưu inline: resize và/hoặc đổi JPEG nếu hợp lý
           let out = arr;
-          let meta = await sharp(arr, { failOn: "none" }).metadata();
+          const meta = await sharp(arr, { failOn: "none" }).metadata();
           let w = meta.width ?? 1, h = meta.height ?? 1;
 
           const needsResize = (meta.width ?? 0) > MAX_W || (meta.height ?? 0) > MAX_H;

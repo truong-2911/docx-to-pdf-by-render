@@ -6,8 +6,6 @@ import sharp from "sharp";
 if (typeof (sharp as any).cache === "function")
   sharp.cache({ items: 10, memory: 50 });
 if (typeof (sharp as any).concurrency === "function") sharp.concurrency(1);
-// @ts-ignore: tuỳ version có/không
-// if (typeof (sharp as any).limitInputPixels === "function") (sharp as any).limitInputPixels(10000 * 10000);
 
 type Opts = {
   maxWidth?: number;
