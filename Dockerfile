@@ -30,4 +30,4 @@ COPY server.cjs ./server.cjs
 COPY lib/keep-alive.cjs ./lib/keep-alive.cjs
 
 EXPOSE 3000
-CMD ["node","server.cjs"]
+CMD ["node","server.cjs"] 
