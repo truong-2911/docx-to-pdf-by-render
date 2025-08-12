@@ -1,4 +1,4 @@
-// lib/convert-api/docx-to-pdf/multipart.ts (streaming)
+// lib/convert-api/docx-to-pdf/multipart.ts (streaming-safe)
 import { NextRequest } from "next/server";
 import os from "os";
 import path from "path";
@@ -6,10 +6,48 @@ import fsp from "fs/promises";
 import fs from "fs";
 import Busboy from "busboy";
 
+type Parsed =
+  | { fields: Record<string, string>; file?: { path: string; filename: string; size: number } }
+  | { fields: Record<string, string> };
+
+async function webStreamToNodeReadable(webReadable: ReadableStream<Uint8Array>) {
+  // 1) Thử node:stream (chuẩn Node 18+)
+  try {
+    const mod: any = await import("node:stream");
+    const Readable = mod?.Readable ?? mod?.default?.Readable;
+    if (Readable?.fromWeb) return Readable.fromWeb(webReadable as any);
+  } catch {}
+  // 2) Thử 'stream' (trong một số bundler)
+  try {
+    const mod: any = await import("stream");
+    const Readable = mod?.Readable ?? mod?.default?.Readable;
+    if (Readable?.fromWeb) return Readable.fromWeb(webReadable as any);
+  } catch {}
+  // 3) Fallback: tự chuyển Web → Node bằng getReader()
+  const mod: any = await import("node:stream");
+  const Readable = mod?.Readable ?? mod?.default?.Readable;
+  const nodeReadable: any = new Readable({ read() {} });
+  const reader = (webReadable as any).getReader();
+
+  (async () => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { nodeReadable.push(null); break; }
+        nodeReadable.push(Buffer.from(value));
+      }
+    } catch (err) {
+      nodeReadable.destroy(err as any);
+    }
+  })();
+
+  return nodeReadable;
+}
+
 export async function parseMultipartToTmp(
   req: NextRequest,
   { fieldName = "file", maxFileSize = 200 * 1024 * 1024 } = {}
-): Promise<{ fields: Record<string, string>; file?: { path: string; filename: string; size: number } }> {
+): Promise<Parsed> {
   const ctype = req.headers.get("content-type") || "";
   if (!ctype.includes("multipart/form-data")) return { fields: {} };
 
@@ -36,16 +74,15 @@ export async function parseMultipartToTmp(
       stream.pipe(ws);
     });
 
-    bb.on("close", resolve);
+    // Busboy kết thúc parse
+    bb.on("finish", resolve);
     bb.on("error", reject);
   });
 
-  // pipe web stream -> busboy
   const webReadable = req.body as ReadableStream<Uint8Array> | null;
   if (!webReadable) return { fields: {} };
 
-  // Convert Web ReadableStream to Node stream
-  const nodeReadable = (await import("stream")).Readable.fromWeb(webReadable as any);
+  const nodeReadable = await webStreamToNodeReadable(webReadable);
   nodeReadable.pipe(bb);
   await done;
 
