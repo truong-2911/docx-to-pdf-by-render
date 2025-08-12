@@ -1,25 +1,25 @@
-import { convert } from "html-to-text";
+export function replaceHtmlTags(obj: any) {
+  const hasHtml = (s: string) => /<[^>]*>/.test(s);
+  const htmlToText = (s: string) => s
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]*>/g, "");
 
-export const isStringHasHtml = (s: string) => /<[^>]*>/.test(s);
-
-export const convertHtmlToString = (htmlString: string) =>
-  convert(htmlString, { wordwrap: 500 });
-
-export const replaceHtmlTags = (obj: any) => {
   const walk = (o: any) => {
     if (Array.isArray(o)) {
-      o.forEach((v, i) => {
-        if (typeof v === "string" && isStringHasHtml(v)) o[i] = convertHtmlToString(v);
+      for (let i = 0; i < o.length; i++) {
+        const v = o[i];
+        if (typeof v === "string") { if (hasHtml(v)) o[i] = htmlToText(v); }
         else if (v && typeof v === "object") walk(v);
-      });
+      }
     } else if (o && typeof o === "object") {
-      Object.keys(o).forEach((k) => {
+      for (const k of Object.keys(o)) {
         const v = o[k];
-        if (typeof v === "string" && isStringHasHtml(v)) o[k] = convertHtmlToString(v);
+        if (typeof v === "string") { if (hasHtml(v)) o[k] = htmlToText(v); }
         else if (v && typeof v === "object") walk(v);
-      });
+      }
     }
   };
+
   walk(obj);
   return obj;
-};
+}

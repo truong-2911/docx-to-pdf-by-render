@@ -1,4 +1,3 @@
-// app/api/map-data-and-convert/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import fsp from "fs/promises";
@@ -13,72 +12,70 @@ import { compressDocxBuffer } from "@/lib/convert-api/docx-to-pdf/compress-docx"
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const corsHeaders = {
+const cors = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-api-key, x-vercel-protection-bypass",
+  "Access-Control-Allow-Headers": "Content-Type"
 };
 
-function json(status: number, body: any) {
+function j(status: number, body: any) {
   return new NextResponse(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...cors, "Content-Type": "application/json" }
   });
 }
 
 export function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+  return new NextResponse(null, { status: 204, headers: cors });
 }
 
 export async function POST(req: NextRequest) {
-  let tmpUploadDir: string | undefined;
   let templatePath: string | undefined;
   let mappedPath: string | undefined;
   let preppedPath: string | undefined;
   let loWorkDir: string | undefined;
 
   try {
-    const { fields, file } = await parseMultipartToTmp(req, { fieldName: "file", maxFileSize: 200 * 1024 * 1024 });
-    if (!file) return json(400, { error: "file (template docx) is required" });
+    const { fields, file } = await parseMultipartToTmp(req, {
+      fieldName: "file",
+      maxFileSize: 200 * 1024 * 1024
+    });
+    if (!file) return j(400, { error: "file (template docx) is required" });
 
     const dataRaw = fields["data"];
-    if (!dataRaw) return json(400, { error: "data (JSON string) is required" });
+    if (!dataRaw) return j(400, { error: "data (JSON string) is required" });
 
-    tmpUploadDir = path.dirname(file.path);
+    const tmpDir = path.dirname(file.path);
     templatePath = file.path;
     const name = (fields["name"] || file.filename || "output.docx").replace(/\.docx?$/i, "");
 
-    // 1) đọc template 1 lần để render
     const templateBuf = await fsp.readFile(templatePath);
-    const jsonObj = replaceHtmlTags(JSON.parse(dataRaw));
-    const mappedBuf = await populateDataOnDocx({ json: jsonObj, file: templateBuf });
+    const json = replaceHtmlTags(JSON.parse(String(dataRaw)));
+    const mappedBuf = await populateDataOnDocx({ json, file: templateBuf });
 
-    mappedPath = path.join(tmpUploadDir, "mapped.docx");
+    mappedPath = path.join(tmpDir, "mapped.docx");
     await fsp.writeFile(mappedPath, mappedBuf);
 
-    // 2) (tùy chọn) nén nếu mapped lớn
-    const enableCompress = (process.env.ENABLE_IMAGE_COMPRESSION ?? "true") !== "false";
+    const enable = (process.env.ENABLE_IMAGE_COMPRESSION ?? "true") !== "false";
     const threshold = Number(process.env.COMPRESS_THRESHOLD_MB || 15) * 1024 * 1024;
 
-    if (enableCompress && mappedBuf.length > threshold) {
+    if (enable && mappedBuf.length > threshold) {
       const { buffer: out, changed } = await compressDocxBuffer(mappedBuf, {
-        maxWidth: Number(process.env.IMG_MAX_WIDTH || 1800),
-        maxHeight: Number(process.env.IMG_MAX_HEIGHT || 1800),
-        quality: Number(process.env.IMG_QUALITY || 75),
+        maxWidth: Number(process.env.IMG_MAX_WIDTH || 1900),
+        maxHeight: Number(process.env.IMG_MAX_HEIGHT || 1900),
+        quality: Number(process.env.IMG_QUALITY || 78),
         convertPngPhotos: true,
         preferWebP: false,
-        minBytesToTouch: Number(process.env.IMG_MIN_BYTES || 200000),
+        minBytesToTouch: Number(process.env.IMG_MIN_BYTES || 100000)
       });
       if (changed > 0) {
-        preppedPath = path.join(tmpUploadDir, "prepared.docx");
+        preppedPath = path.join(tmpDir, "prepared.docx");
         await fsp.writeFile(preppedPath, out);
       }
     }
 
-    // 3) Convert từ file path → stream PDF trả về
-    const inputForLO = preppedPath || mappedPath;
-    const inputBuffer = await fsp.readFile(inputForLO);
-    const { pdfPath, workDir } = await convertDocxToPdf(inputBuffer);
+    const input = await fsp.readFile(preppedPath || mappedPath);
+    const { pdfPath, workDir } = await convertDocxToPdf(input);
     loWorkDir = workDir;
 
     const nodeStream = fs.createReadStream(pdfPath);
@@ -95,13 +92,13 @@ export async function POST(req: NextRequest) {
     return new NextResponse(webStream, {
       status: 200,
       headers: {
-        ...corsHeaders,
+        ...cors,
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${name}.pdf"`,
-      },
+        "Content-Disposition": `attachment; filename="${name}.pdf"`
+      }
     });
   } catch (err: any) {
     console.error("[/api/map-data-and-convert] error:", err);
-    return json(500, { error: err?.message || "Map & conversion failed" });
+    return j(500, { error: err?.message || "Map & conversion failed" });
   }
 }

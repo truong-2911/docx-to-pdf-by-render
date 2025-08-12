@@ -1,7 +1,7 @@
 node_modules
 .next/cache
 .git
-.vscode
-*.log
+.gitignore
 Dockerfile
-render.yaml
+README.md
+.env*

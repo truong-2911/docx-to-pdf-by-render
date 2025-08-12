@@ -1,75 +1,71 @@
-import Busboy from "busboy";
+// lib/convert-api/docx-to-pdf/multipart.ts
+import { NextRequest } from "next/server";
 import os from "os";
 import path from "path";
-import fs from "fs";
 import fsp from "fs/promises";
+import { createWriteStream } from "fs";
 import { Readable } from "stream";
-import type { NextRequest } from "next/server";
-
-export type UploadedFile = {
-  fieldname: string;
-  filename: string;
-  mimeType: string;
-  path: string;
-  size: number;
-};
+import busboy from "busboy";
 
 export async function parseMultipartToTmp(
   req: NextRequest,
-  opts: { fieldName?: string; maxFileSize?: number } = {}
-): Promise<{ fields: Record<string, string>; file?: UploadedFile }> {
+  { fieldName = "file", maxFileSize = 200 * 1024 * 1024 } = {}
+): Promise<{
+  fields: Record<string, string>;
+  file?: { path: string; filename: string; size: number };
+}> {
+  // 1) Kiểm tra header
   const contentType = req.headers.get("content-type") || "";
-  if (!contentType.toLowerCase().startsWith("multipart/form-data")) {
-    throw new Error("Content-Type must be multipart/form-data");
+  if (!contentType.includes("multipart/form-data")) {
+    return { fields: {} };
   }
 
-  const maxFileSize = opts.maxFileSize ?? 200 * 1024 * 1024; // 200MB
-  const fieldName = opts.fieldName || "file";
-
-  const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "upload-"));
-  const headers: Record<string, string> = {};
-  req.headers.forEach((v, k) => (headers[k.toLowerCase()] = v));
-
-  const busboy = Busboy({ headers, limits: { fileSize: maxFileSize } });
-  const nodeStream = Readable.fromWeb(req.body as any);
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "upload-"));
+  const bb = busboy({
+    headers: { "content-type": contentType },
+    limits: { fileSize: maxFileSize },
+  });
 
   const fields: Record<string, string> = {};
-  let uploaded: UploadedFile | undefined;
+  let fileInfo: { path: string; filename: string; size: number } | undefined;
+
   const fileWrites: Promise<void>[] = [];
 
   const done = new Promise<void>((resolve, reject) => {
-    busboy.on("field", (name, val) => {
+    bb.on("field", (name, val) => {
       fields[name] = val;
     });
 
-    busboy.on("file", (name, file, info) => {
-      const { filename, mimeType } = info;
-      const safe = (filename || "upload.bin").replace(/[^\w.\-]+/g, "_");
-      const outPath = path.join(tmpRoot, `${Date.now()}_${safe}`);
-      const write = fs.createWriteStream(outPath, { flags: "w" });
+    bb.on("file", (name, stream, info) => {
+      if (name !== fieldName) {
+        // Không phải field file mong muốn -> bỏ qua
+        stream.resume();
+        return;
+      }
+      const filename = info.filename || "upload.bin";
+      const filepath = path.join(tmpDir, filename);
+
       let size = 0;
+      stream.on("data", (chunk: Buffer) => (size += chunk.length));
 
-      file.on("data", (d: Buffer) => (size += d.length));
-      file.on("limit", () => reject(new Error("File too large")));
-      file.pipe(write);
-
+      const out = createWriteStream(filepath);
       const p = new Promise<void>((res, rej) => {
-        write.on("finish", () => {
-          if (name === fieldName) {
-            uploaded = { fieldname: name, filename: safe, mimeType, path: outPath, size };
-          }
+        out.on("close", () => {
+          fileInfo = { path: filepath, filename, size };
           res();
         });
-        write.on("error", rej);
+        out.on("error", rej);
       });
 
+      stream.pipe(out);
       fileWrites.push(p);
     });
 
-    busboy.on("error", reject);
-    busboy.on("finish", async () => {
+    bb.on("error", reject);
+
+    // ✅ Chờ tất cả fileWrites xong rồi mới resolve
+    bb.on("finish", async () => {
       try {
-        // 🔴 chờ toàn bộ file ghi xong mới resolve
         await Promise.all(fileWrites);
         resolve();
       } catch (e) {
@@ -78,8 +74,10 @@ export async function parseMultipartToTmp(
     });
   });
 
-  nodeStream.pipe(busboy);
-  await done;
+  // 2) Stream body → Busboy (không cần arrayBuffer)
+  const nodeReadable = Readable.fromWeb(req.body as any);
+  nodeReadable.pipe(bb);
 
-  return { fields, file: uploaded };
+  await done;
+  return { fields, file: fileInfo };
 }

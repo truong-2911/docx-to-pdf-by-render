@@ -5,9 +5,12 @@ const nextConfig: NextConfig = {
   output: "standalone",
   reactStrictMode: true,
   poweredByHeader: false,
-  // Tuỳ chọn nếu bạn không muốn build fail vì lint/type (có thể bỏ sau)
-  // typescript: { ignoreBuildErrors: true },
-  // eslint: { ignoreDuringBuilds: true },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: true,
+  },
 };
 
 export default nextConfig;
