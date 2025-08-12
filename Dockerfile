@@ -14,8 +14,10 @@ WORKDIR /app
 
 # LibreOffice + fonts
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice fonts-dejavu fonts-liberation fonts-noto fonts-noto-cjk fonts-noto-color-emoji \
+    libreoffice-writer \
+    fonts-dejavu fonts-liberation fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
+
 
 # ✅ chỉ cần artefacts standalone, không cần 'next' trong node_modules
 COPY --from=builder /app/.next/standalone ./
