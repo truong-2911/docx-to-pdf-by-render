@@ -53,21 +53,21 @@ export async function POST(req: NextRequest) {
     const enableCompress = (process.env.ENABLE_IMAGE_COMPRESSION ?? "true") !== "false";
     const threshold = Number(process.env.COMPRESS_THRESHOLD_MB || 15) * 1024 * 1024;
 
-    if (enableCompress && file.size > threshold) {
-      const buf = await fsp.readFile(docxPath);
-      const { buffer: out, changed } = await compressDocxBuffer(buf, {
-        maxWidth: Number(process.env.IMG_MAX_WIDTH || 1800),
-        maxHeight: Number(process.env.IMG_MAX_HEIGHT || 1800),
-        quality: Number(process.env.IMG_QUALITY || 75),
-        convertPngPhotos: true,
-        preferWebP: false,
-        minBytesToTouch: Number(process.env.IMG_MIN_BYTES || 200000),
-      });
-      if (changed > 0) {
-        preppedPath = path.join(tmpUploadDir, "prepared.docx");
-        await fsp.writeFile(preppedPath, out);
-      }
-    }
+    // if (enableCompress && file.size > threshold) {
+    //   const buf = await fsp.readFile(docxPath);
+    //   const { buffer: out, changed } = await compressDocxBuffer(buf, {
+    //     maxWidth: Number(process.env.IMG_MAX_WIDTH || 1800),
+    //     maxHeight: Number(process.env.IMG_MAX_HEIGHT || 1800),
+    //     quality: Number(process.env.IMG_QUALITY || 75),
+    //     convertPngPhotos: true,
+    //     preferWebP: false,
+    //     minBytesToTouch: Number(process.env.IMG_MIN_BYTES || 200000),
+    //   });
+    //   if (changed > 0) {
+    //     preppedPath = path.join(tmpUploadDir, "prepared.docx");
+    //     await fsp.writeFile(preppedPath, out);
+    //   }
+    // }
     tCompress = Date.now() - t1;
 
     // CONVERT

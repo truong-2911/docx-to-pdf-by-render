@@ -28,4 +28,5 @@ ENV HOSTNAME=0.0.0.0
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD curl -fsS http://127.0.0.1:${PORT:-3000}/health || exit 1
 
-CMD ["node","server.js"]
+CMD ["sh","-lc","node server.js"]
+

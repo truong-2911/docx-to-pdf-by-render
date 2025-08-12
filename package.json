@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3000",
-    "build": "next build",
+    "build": "next build && next export",
     "start": "next start -p ${PORT:-3000}"
   },
   "dependencies": {
@@ -25,6 +25,8 @@
     "image-size": "^2.0.2",
     "lucide-react": "^0.501.0",
     "next": "15.3.1",
+    "node-cron": "^4.2.1",
+    "node-fetch": "^3.3.2",
     "pidusage": "^4.0.1",
     "pizzip": "^3.2.0",
     "react": "^19.0.0",
