@@ -29,23 +29,25 @@ export function OPTIONS() {
 }
 
 export async function POST(req: NextRequest) {
-  let tmpUploadDir: string | undefined;
   let docxPath: string | undefined;
   let preppedPath: string | undefined;
   let loWorkDir: string | undefined;
 
   try {
-    console.log("api hit");
+    // (tuỳ chọn) API key guard
+    const apiKey = req.headers.get("x-api-key") ?? new URL(req.url).searchParams.get("x-api-key");
+    if (process.env.ZC_SECRET && apiKey !== process.env.ZC_SECRET) {
+      return json(401, { error: "Unauthorized" });
+    }
+
     const { file } = await parseMultipartToTmp(req, { fieldName: "file", maxFileSize: 200 * 1024 * 1024 });
     if (!file) return json(400, { error: "file is required" });
 
-    tmpUploadDir = path.dirname(file.path);
     docxPath = file.path;
 
     const enableCompress = (process.env.ENABLE_IMAGE_COMPRESSION ?? "true") !== "false";
     const threshold = Number(process.env.COMPRESS_THRESHOLD_MB || 15) * 1024 * 1024;
 
-    // (tùy chọn) nén: chỉ khi file lớn hơn threshold để tiết kiệm thời gian
     if (enableCompress && file.size > threshold) {
       const buf = await fsp.readFile(docxPath);
       const { buffer: out, changed } = await compressDocxBuffer(buf, {
@@ -57,10 +59,11 @@ export async function POST(req: NextRequest) {
         minBytesToTouch: Number(process.env.IMG_MIN_BYTES || 200000),
       });
       if (changed > 0) {
-        preppedPath = path.join(tmpUploadDir, "prepared.docx");
+        preppedPath = path.join(path.dirname(docxPath), "prepared.docx");
         await fsp.writeFile(preppedPath, out);
       }
     }
+
     const inputForLO = preppedPath || docxPath;
     const inputBuffer = await fsp.readFile(inputForLO);
     const { pdfPath, workDir } = await convertDocxToPdf(inputBuffer);
@@ -69,13 +72,12 @@ export async function POST(req: NextRequest) {
     const baseName = (file.filename || "converted.docx").replace(/\.docx?$/i, "");
     const nodeStream = fs.createReadStream(pdfPath);
 
-    // cleanup sau khi stream đóng
-    const cleanup = async () => {
+    nodeStream.on("error", (e) => console.error("[/api/convert] stream error:", e));
+    nodeStream.on("close", async () => {
       try { if (docxPath) await fsp.rm(path.dirname(docxPath), { recursive: true, force: true }); } catch {}
       try { if (preppedPath) await fsp.unlink(preppedPath); } catch {}
       try { if (loWorkDir) await fsp.rm(loWorkDir, { recursive: true, force: true }); } catch {}
-    };
-    nodeStream.on("close", cleanup);
+    });
 
     const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
     return new NextResponse(webStream, {
@@ -84,6 +86,7 @@ export async function POST(req: NextRequest) {
         ...corsHeaders,
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="${baseName}.pdf"`,
+        "Cache-Control": "no-store",
       },
     });
   } catch (err: any) {
