@@ -10,27 +10,27 @@ const corsHeaders = {
   "Access-Control-Expose-Headers": "X-Conversation-State",
 };
 
-console.log("=== Middleware file loaded ===");
-
 export async function middleware(request: NextRequest) {
-  console.log("middleware hit");
+  console.log("✅ Middleware hit:", request.nextUrl.pathname);
+
   if (request.method === "OPTIONS") {
+    console.log("🔹 CORS preflight request");
     return new NextResponse(null, { status: 204, headers: corsHeaders });
   }
 
-  console.log(request.nextUrl.pathname);
   if (
     request.nextUrl.pathname.includes("/api/convert") ||
     request.nextUrl.pathname.includes("/api/map-data-and-convert")
   ) {
-    console.log("api hit");
+    console.log("🔹 API protected route hit");
     const apiKey =
       request.headers.get("x-api-key") ||
       request.nextUrl.searchParams.get("x-api-key");
     const expectedApiKey = process.env.ZC_SECRET;
-    console.log("api key", apiKey);
-    console.log(apiKey, expectedApiKey);
+
+    console.log("Received API key:", apiKey);
     if (!apiKey || apiKey !== expectedApiKey) {
+      console.warn("❌ Unauthorized access attempt");
       return new NextResponse(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -38,10 +38,12 @@ export async function middleware(request: NextRequest) {
     }
     return NextResponse.next();
   }
+
   return await updateSession(request);
 }
 
 export const config = {
-  matcher: ["/api/:path*"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+  ],
 };
-
