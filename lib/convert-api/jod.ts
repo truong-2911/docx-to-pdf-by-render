@@ -1,3 +1,4 @@
+// lib/convert-api/jod.ts
 import FormData from "form-data";
 import axios, { AxiosError } from "axios";
 import fs from "fs";
@@ -6,19 +7,28 @@ import os from "os";
 import path from "path";
 import { pipeline } from "stream/promises";
 
-/**
- * JODConverter REST client — thử nhiều endpoint:
- * - /conversion?format=pdf (kontextwork-converter)
- * - /convert?format=pdf    (jodconverter-examples)
- *
- * ENV:
- *   JOD_URL
- *   JOD_TIMEOUT_MS
- *   JOD_ENDPOINT (tuỳ chọn)
- */
-const BASE = (process.env.JOD_URL || "http://127.0.0.1:8080").replace(/\/+$/,"");
-const TIMEOUT = Number(process.env.JOD_TIMEOUT_MS || 120000);
+function normalizeBase(input: string | undefined) {
+  let u = (input || "").trim();
+  if (!u) throw new Error("JOD_URL is empty");
+  if (!/^https?:\/\//i.test(u)) u = "http://" + u;      // tự thêm scheme
+  // cố gắng thêm :8080 nếu thiếu port và là nội bộ railway
+  try {
+    const parsed = new URL(u);
+    if (!parsed.port && parsed.hostname.endsWith(".railway.internal")) {
+      parsed.port = "8080";
+      u = parsed.toString().replace(/\/+$/,"");
+    }
+  } catch { /* để nguyên, axios sẽ báo lỗi nếu sai */ }
+  return u.replace(/\/+$/,"");
+}
 
+/**
+ * Thử nhiều endpoint:
+ *  - /conversion?format=pdf  (kontextwork-converter)
+ *  - /convert?format=pdf     (jodconverter-examples)
+ */
+const BASE = normalizeBase(process.env.JOD_URL);
+const TIMEOUT = Number(process.env.JOD_TIMEOUT_MS || 120000);
 const endpoints = [
   process.env.JOD_ENDPOINT?.replace(/\/+$/,"") || "",
   "/conversion",
@@ -28,7 +38,6 @@ const endpoints = [
 async function writeStreamToFile(readable: NodeJS.ReadableStream, outPath: string) {
   await pipeline(readable, fs.createWriteStream(outPath));
 }
-
 function briefError(e: unknown) {
   const ax = e as AxiosError<any>;
   const status = ax.response?.status;
@@ -39,7 +48,6 @@ function briefError(e: unknown) {
 export async function convertViaJodPath(inputPath: string) {
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "jod-"));
   const out = path.join(tmp, "out.pdf");
-
   const form = new FormData();
   form.append("file", fs.createReadStream(inputPath));
 
