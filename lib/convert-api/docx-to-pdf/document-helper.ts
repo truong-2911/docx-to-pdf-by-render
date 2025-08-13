@@ -1,6 +1,6 @@
 // lib/convert-api/docx-to-pdf/document-helper.ts
-// Tối ưu fetch ảnh Zoho chỉ-URL: keep-alive, IPv4 (tùy chọn), retry/backoff,
-// per-host concurrency 10, transform ảnh bằng sharp để giảm RAM/PDF size.
+// Fetch ảnh Zoho (chỉ-URL) tối ưu kết nối + retry/backoff + per-host concurrency=10
+// Thêm DEBUG qua ENV để soi chi tiết từng ảnh.
 
 import axios from "axios";
 import http from "http";
@@ -40,11 +40,25 @@ const DISK_CACHE_DIR = process.env.IMG_DISK_CACHE_DIR || path.join(os.tmpdir(), 
 const DISK_CACHE_TTL = Number(process.env.IMG_DISK_CACHE_TTL_MS || 10 * 60 * 1000);
 const CACHE_MAX = Number(process.env.IMG_CACHE_MAX_ENTRIES || 2000);
 
+/* ==== DEBUG flags (bật khi cần soi) ==== */
+const DEBUG_DNS = (process.env.IMG_DEBUG_DNS ?? "false") === "true";
+const DEBUG_FETCH = (process.env.IMG_DEBUG_FETCH ?? "false") === "true";
+
 /* =======================
  * HTTP client (keep-alive + optional IPv4)
  * ======================= */
 const customLookup =
-  FORCE_IPV4 ? ((hostname: string, _opts: any, cb: any) => dns.lookup(hostname, { family: 4 }, cb)) : undefined;
+  FORCE_IPV4
+    ? (hostname: string, _opts: any, cb: any) =>
+        dns.lookup(hostname, { family: 4 }, (err, address, family) => {
+          if (DEBUG_DNS && !err) console.log(`[dns] ${hostname} -> ${address} (v${family})`);
+          cb(err, address, family);
+        })
+    : (hostname: string, _opts: any, cb: any) =>
+        dns.lookup(hostname, { all: false }, (err, address, family) => {
+          if (DEBUG_DNS && !err) console.log(`[dns] ${hostname} -> ${address} (v${family})`);
+          cb(err, address, family);
+        });
 
 const httpAgent = new http.Agent({
   keepAlive: true,
@@ -169,28 +183,50 @@ function computeBackoff(attempt: number, retryAfter?: string | number) {
   const jitter = Math.floor(Math.random() * 150);
   return Math.min(8000, base + jitter);
 }
+function short(u: string) {
+  try {
+    const { host, pathname } = new URL(u);
+    const tail = pathname.split("/").slice(-1)[0] || "";
+    return `${host}/${tail}`; // log gọn
+  } catch {
+    return u;
+  }
+}
 
 async function fetchRaw(url: string, token = "", attempts = 4): Promise<Buffer> {
   const headers = token ? { Authorization: `Zoho-oauthtoken ${token}` } : undefined;
   let lastErr: any;
 
   for (let i = 1; i <= attempts; i++) {
+    const t0 = Date.now();
     try {
       const res = await httpClient.get(url, { headers });
-      return Buffer.from(res.data as ArrayBuffer);
+      const buf = Buffer.from(res.data as ArrayBuffer);
+      if (DEBUG_FETCH) {
+        const len = Number(res.headers?.["content-length"]) || buf.length || 0;
+        console.log(`[img] OK  ${short(url)} ${res.status} ${len}B in ${Date.now() - t0}ms (try ${i}/${attempts})`);
+      }
+      return buf;
     } catch (e: any) {
       lastErr = e;
       const status = e?.response?.status;
+      const code = e?.code;
       const retriable =
         status === 429 ||
         (status >= 500 && status < 600) ||
-        e?.code === "ECONNRESET" ||
-        e?.code === "ETIMEDOUT" ||
-        e?.code === "EAI_AGAIN";
+        code === "ECONNRESET" ||
+        code === "ETIMEDOUT" ||
+        code === "EAI_AGAIN";
+      if (DEBUG_FETCH) {
+        console.log(
+          `[img] ERR ${short(url)} status=${status ?? "-"} code=${code ?? "-"} after ${Date.now() - t0}ms (try ${i}/${attempts})`
+        );
+      }
       if (!retriable || i === attempts) break;
 
       const ra = e?.response?.headers?.["retry-after"];
       const wait = computeBackoff(i, ra);
+      if (DEBUG_FETCH) console.log(`[img] RETRY in ${wait}ms (retry-after=${ra ?? "-"})`);
       await sleep(wait);
     }
   }
