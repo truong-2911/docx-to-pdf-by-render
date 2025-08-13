@@ -5,13 +5,13 @@ import fsp from "fs/promises";
 import fs from "fs";
 import { Readable } from "stream";
 import { parseMultipartToTmp } from "@/lib/convert-api/docx-to-pdf/multipart";
-import { replaceHtmlTags } from "@/lib/convert-api/docx-to-pdf/document-helper";
-import { populateDataOnDocx } from "@/lib/convert-api/docx-to-pdf/document-helper";
+import { replaceHtmlTags, populateDataOnDocx } from "@/lib/convert-api/docx-to-pdf/document-helper";
 import { beginRequestMetrics, endRequestMetrics, mb } from "@/lib/metrics";
 import { convertViaJodPath } from "@/lib/convert-api/jod";
 import { convertDocxFile } from "@/lib/convert-api/libre-office";
 import { requireAuth, handlePreflight } from "@/lib/utils/api-guard";
 import { acquire, release } from "@/lib/utils/concurrency";
+import { put } from "@vercel/blob";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,10 +19,11 @@ export const dynamic = "force-dynamic";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-api-key, x-vercel-protection-bypass",
+  // 👇 thêm Authorization để client có thể gửi Bearer token qua CORS
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, x-vercel-protection-bypass",
 } as const;
 
-function json(status: number, body: any, extraHeaders: Record<string,string> = {}) {
+function json(status: number, body: any, extraHeaders: Record<string, string> = {}) {
   return new NextResponse(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json", ...extraHeaders },
@@ -34,7 +35,6 @@ export function OPTIONS(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-
   const deny = requireAuth(req);
   if (deny) return deny;
 
@@ -52,6 +52,7 @@ export async function POST(req: NextRequest) {
   let used: "jod" | "lo" = "jod";
 
   try {
+    // 1) UPLOAD multipart
     const { fields, file } = await parseMultipartToTmp(req, { fieldName: "file", maxFileSize: 200 * 1024 * 1024 });
     tUpload = Date.now() - t0;
     if (!file) return json(400, { error: "file (template docx) is required" });
@@ -59,9 +60,11 @@ export async function POST(req: NextRequest) {
 
     inputBytes = file.size;
     templatePath = file.path;
-    const name = (fields["name"] || file.filename || "output.docx").replace(/\.docx?$/i, "");
 
-    // MAP
+    const rawName = (fields["name"] || file.filename || "output.docx").replace(/\.docx?$/i, "");
+    const pdfKey = `${(process.env.BLOB_PREFIX || "pdf/")}${rawName}.pdf`;
+
+    // 2) MAP
     const t1 = Date.now();
     const templateBuf = await fsp.readFile(templatePath);
     const jsonObj = replaceHtmlTags(JSON.parse(fields["data"]));
@@ -70,10 +73,9 @@ export async function POST(req: NextRequest) {
     await fsp.writeFile(mappedPath, mappedBuf);
     tMap = Date.now() - t1;
 
-    // CONVERT (ưu tiên JOD)
+    // 3) CONVERT (ưu tiên JOD)
     const t2 = Date.now();
     let pdfPath: string;
-
     try {
       const out = await convertViaJodPath(mappedPath);
       pdfPath = out.pdfPath; workDir = out.workDir; used = "jod";
@@ -100,27 +102,41 @@ export async function POST(req: NextRequest) {
       io_bytes: { input_docx: inputBytes, output_pdf: outputBytes },
     });
 
+    // 4) UPLOAD TO VERCEL BLOB (STREAM) — không đọc vào RAM
+    // convert Node stream -> Web ReadableStream
     const nodeStream = fs.createReadStream(pdfPath);
-    const cleanup = async () => {
-      try { if (templatePath) await fsp.rm(path.dirname(templatePath), { recursive: true, force: true }); } catch {}
-      try { if (mappedPath) await fsp.unlink(mappedPath); } catch {}
-      try { if (workDir) await fsp.rm(workDir, { recursive: true, force: true }); } catch {}
-    };
-    nodeStream.on("close", cleanup);
-
     const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
-    return new NextResponse(webStream, {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${name}.pdf"`,
-        "Server-Timing": `upload;dur=${tUpload}, map;dur=${tMap}, convert;dur=${tConvert}, total;dur=${totalMs}`,
-      },
+
+    const token = process.env.BLOB_READ_WRITE_TOKEN; // bắt buộc ngoài Vercel
+    const { url } = await put(pdfKey, webStream, {
+      access: "public",
+      contentType: "application/pdf",
+      token,
+      // nếu muốn ghi đè tên file cũ
+      addRandomSuffix: false,
+      // hoặc: allowOverwrite: true,  (cũng OK, nhưng addRandomSuffix:false đủ dùng)
+      // cacheControl: "public, max-age=31536000, immutable",
     });
+
+    // 5) CLEANUP file tạm sau khi upload xong
+    try { if (templatePath) await fsp.rm(path.dirname(templatePath), { recursive: true, force: true }); } catch {}
+    try { if (mappedPath) await fsp.unlink(mappedPath); } catch {}
+    try { if (workDir) await fsp.rm(workDir, { recursive: true, force: true }); } catch {}
+
+    // 6) TRẢ JSON (URL blob)
+    const serverTiming = `upload;dur=${tUpload}, map;dur=${tMap}, convert;dur=${tConvert}, total;dur=${totalMs}`;
+    return json(200, {
+      ok: true,
+      engine: used,
+      url,
+      key: pdfKey,
+      bytes: { input_docx: inputBytes, output_pdf: outputBytes },
+      timings: { upload: tUpload, map: tMap, convert: tConvert, total: totalMs },
+    }, { "Server-Timing": serverTiming });
+
   } catch (err: any) {
     endRequestMetrics(ctx, { engine: used, error: err?.message ?? "unknown", phase_ms: { upload: tUpload, map: tMap, convert: tConvert } });
-    console.error("[/api/map-data-and-convert] error:", err);
+    console.error("[/api/map-data-and-convert] error:", err?.message || err);
     const partial = `upload;dur=${tUpload}, map;dur=${tMap}, convert;dur=${tConvert}`;
     return json(500, { error: err?.message || "Map & conversion failed" }, { "Server-Timing": partial });
   } finally {
