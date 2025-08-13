@@ -8,7 +8,8 @@ import { Readable } from "stream";
 import { beginRequestMetrics, endRequestMetrics, mb } from "@/lib/metrics";
 import { convertViaJodPath } from "@/lib/convert-api/jod";
 import { convertDocxFile } from "@/lib/convert-api/libre-office";
-import { requireAuth } from "@/lib/utils/api-guard";
+import { requireAuth, handlePreflight } from "@/lib/utils/api-guard";
+import { acquire, release } from "@/lib/utils/concurrency";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,14 +27,15 @@ function json(status: number, body: any, extraHeaders: Record<string, string> = 
   });
 }
 
-export function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+export function OPTIONS(req: NextRequest) {
+  return handlePreflight(req) ?? new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
 export async function POST(req: NextRequest) {
 
   const deny = requireAuth(req);
   if (deny) return deny;  
+  await acquire("convert");
   const ctx = beginRequestMetrics("convert");
   const REQUIRE_JOD = process.env.REQUIRE_JOD === "true";
 
@@ -102,5 +104,7 @@ export async function POST(req: NextRequest) {
     console.error("[/api/convert] error:", err);
     const partial = `upload;dur=${tUpload}, convert;dur=${tConvert}`;
     return json(500, { error: err?.message || "Conversion failed" }, { "Server-Timing": partial });
+  } finally {
+    release("convert");
   }
 }

@@ -10,7 +10,8 @@ import { populateDataOnDocx } from "@/lib/convert-api/docx-to-pdf/document-helpe
 import { beginRequestMetrics, endRequestMetrics, mb } from "@/lib/metrics";
 import { convertViaJodPath } from "@/lib/convert-api/jod";
 import { convertDocxFile } from "@/lib/convert-api/libre-office";
-import { requireAuth } from "@/lib/utils/api-guard";
+import { requireAuth, handlePreflight } from "@/lib/utils/api-guard";
+import { acquire, release } from "@/lib/utils/concurrency";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,14 +29,16 @@ function json(status: number, body: any, extraHeaders: Record<string,string> = {
   });
 }
 
-export function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders });
+export function OPTIONS(req: NextRequest) {
+  return handlePreflight(req) ?? new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
 export async function POST(req: NextRequest) {
 
   const deny = requireAuth(req);
   if (deny) return deny;
+
+  await acquire("map+convert");
   const ctx = beginRequestMetrics("map-data-and-convert");
   const REQUIRE_JOD = process.env.REQUIRE_JOD === "true";
 
@@ -120,5 +123,7 @@ export async function POST(req: NextRequest) {
     console.error("[/api/map-data-and-convert] error:", err);
     const partial = `upload;dur=${tUpload}, map;dur=${tMap}, convert;dur=${tConvert}`;
     return json(500, { error: err?.message || "Map & conversion failed" }, { "Server-Timing": partial });
+  } finally {
+    release("map+convert");
   }
 }
