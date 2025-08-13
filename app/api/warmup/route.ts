@@ -1,6 +1,8 @@
 // app/api/warmup/route.ts
 import { NextResponse } from "next/server";
 import { jodConvertBytes } from "@/lib/convert-api/jod";
+import fsp from "fs/promises";
+import path from "path";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +21,8 @@ async function warmJOD() {
   // giúp spawn LO + load filter/pdf-export + font cache
   const buf = Buffer.from("warmup", "utf8");
   try {
-    const pdf = await jodConvertBytes("warmup.txt", buf, "pdf");
+    const tinyDocx = await fsp.readFile(path.join(process.cwd(), "public", "tiny.docx"));
+    const pdf = await jodConvertBytes("warmup.docx", tinyDocx, "pdf");
     // bỏ kết quả, chỉ cần khởi động đường convert
     return { ok: true, bytes: pdf.length };
   } catch (e: any) {
