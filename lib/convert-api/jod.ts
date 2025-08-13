@@ -7,37 +7,39 @@ import os from "os";
 import path from "path";
 import { pipeline } from "stream/promises";
 
-function normalizeBase(input: string | undefined) {
+function normalizeBase(input?: string): string | null {
   let u = (input || "").trim();
-  if (!u) throw new Error("JOD_URL is empty");
-  if (!/^https?:\/\//i.test(u)) u = "http://" + u;      // tự thêm scheme
-  // cố gắng thêm :8080 nếu thiếu port và là nội bộ railway
+  if (!u) return null;
+  if (!/^https?:\/\//i.test(u)) u = "http://" + u; // tự thêm scheme
   try {
-    const parsed = new URL(u);
-    if (!parsed.port && parsed.hostname.endsWith(".railway.internal")) {
-      parsed.port = "8080";
-      u = parsed.toString().replace(/\/+$/,"");
+    const p = new URL(u);
+    if (!p.port && p.hostname.endsWith(".railway.internal")) {
+      p.port = "8080"; // JOD mặc định 8080
+      u = p.toString();
     }
-  } catch { /* để nguyên, axios sẽ báo lỗi nếu sai */ }
+  } catch {
+    // để nguyên; axios sẽ báo lỗi "Invalid URL" nếu sai
+  }
   return u.replace(/\/+$/,"");
 }
 
-/**
- * Thử nhiều endpoint:
- *  - /conversion?format=pdf  (kontextwork-converter)
- *  - /convert?format=pdf     (jodconverter-examples)
- */
-const BASE = normalizeBase(process.env.JOD_URL);
-const TIMEOUT = Number(process.env.JOD_TIMEOUT_MS || 120000);
-const endpoints = [
-  process.env.JOD_ENDPOINT?.replace(/\/+$/,"") || "",
-  "/conversion",
-  "/convert",
-].filter(Boolean);
+function getBase(): string | null {
+  return normalizeBase(process.env.JOD_URL);
+}
+
+function getEndpoints(): string[] {
+  const list = [process.env.JOD_ENDPOINT || "", "/conversion", "/convert"];
+  return list.filter(Boolean).map(s => s.replace(/\/+$/,""));
+}
+
+function getTimeout(): number {
+  return Number(process.env.JOD_TIMEOUT_MS || 120000);
+}
 
 async function writeStreamToFile(readable: NodeJS.ReadableStream, outPath: string) {
   await pipeline(readable, fs.createWriteStream(outPath));
 }
+
 function briefError(e: unknown) {
   const ax = e as AxiosError<any>;
   const status = ax.response?.status;
@@ -46,6 +48,12 @@ function briefError(e: unknown) {
 }
 
 export async function convertViaJodPath(inputPath: string) {
+  const BASE = getBase();                 // <-- chỉ đọc ENV khi được gọi
+  if (!BASE) throw new Error("JOD_URL is empty");
+
+  const endpoints = getEndpoints();
+  const TIMEOUT = getTimeout();
+
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "jod-"));
   const out = path.join(tmp, "out.pdf");
   const form = new FormData();
@@ -67,7 +75,12 @@ export async function convertViaJodPath(inputPath: string) {
         validateStatus: (s) => s >= 200 && s < 300,
       });
       await writeStreamToFile(res.data as any, out);
-      return { pdfPath: out, workDir: tmp, jodMs: Number(res.headers["x-parse-time"] || 0), endpoint: url };
+      return {
+        pdfPath: out,
+        workDir: tmp,
+        jodMs: Number(res.headers["x-parse-time"] || 0),
+        endpoint: url,
+      };
     } catch (e) {
       lastErr = e;
     }
