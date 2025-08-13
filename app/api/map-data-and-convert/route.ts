@@ -5,13 +5,10 @@ import fsp from "fs/promises";
 import fs from "fs";
 import { Readable } from "stream";
 import { parseMultipartToTmp } from "@/lib/convert-api/docx-to-pdf/multipart";
-import { replaceHtmlTags } from "@/lib/convert-api/docx-to-pdf/html-helper";
+import { replaceHtmlTags } from "@/lib/convert-api/docx-to-pdf/document-helper";
 import { populateDataOnDocx } from "@/lib/convert-api/docx-to-pdf/document-helper";
 import { beginRequestMetrics, endRequestMetrics, mb } from "@/lib/metrics";
-
-// NEW: ưu tiên JOD
 import { convertViaJodPath } from "@/lib/convert-api/jod";
-// Fallback: LibreOffice
 import { convertDocxFile } from "@/lib/convert-api/libre-office";
 
 export const runtime = "nodejs";
@@ -36,10 +33,11 @@ export function OPTIONS() {
 
 export async function POST(req: NextRequest) {
   const ctx = beginRequestMetrics("map-data-and-convert");
+  const REQUIRE_JOD = process.env.REQUIRE_JOD === "true";
 
-  let tmpUploadDir: string | undefined;
   let templatePath: string | undefined;
   let mappedPath: string | undefined;
+  let workDir: string | undefined;
 
   const t0 = Date.now();
   let tUpload = 0, tMap = 0, tConvert = 0;
@@ -47,36 +45,34 @@ export async function POST(req: NextRequest) {
   let used: "jod" | "lo" = "jod";
 
   try {
-    // UPLOAD
     const { fields, file } = await parseMultipartToTmp(req, { fieldName: "file", maxFileSize: 200 * 1024 * 1024 });
     tUpload = Date.now() - t0;
-
     if (!file) return json(400, { error: "file (template docx) is required" });
     if (!fields["data"]) return json(400, { error: "data (JSON string) is required" });
 
     inputBytes = file.size;
-    tmpUploadDir = path.dirname(file.path);
     templatePath = file.path;
     const name = (fields["name"] || file.filename || "output.docx").replace(/\.docx?$/i, "");
 
-    // MAP DATA
+    // MAP
     const t1 = Date.now();
     const templateBuf = await fsp.readFile(templatePath);
     const jsonObj = replaceHtmlTags(JSON.parse(fields["data"]));
     const mappedBuf = await populateDataOnDocx({ json: jsonObj, file: templateBuf });
-    mappedPath = path.join(tmpUploadDir, "mapped.docx");
+    mappedPath = path.join(path.dirname(templatePath), "mapped.docx");
     await fsp.writeFile(mappedPath, mappedBuf);
     tMap = Date.now() - t1;
 
-    // CONVERT — ưu tiên JOD, fallback LO
+    // CONVERT (ưu tiên JOD)
     const t2 = Date.now();
     let pdfPath: string;
-    let workDir: string;
 
     try {
       const out = await convertViaJodPath(mappedPath);
       pdfPath = out.pdfPath; workDir = out.workDir; used = "jod";
-    } catch {
+    } catch (e: any) {
+      console.warn("[jod->fallback] map+convert:", e?.message || e);
+      if (REQUIRE_JOD) throw new Error("JOD required but failed: " + (e?.message || e));
       const out = await convertDocxFile(mappedPath);
       pdfPath = out.pdfPath; workDir = out.workDir; used = "lo";
     }
@@ -91,14 +87,12 @@ export async function POST(req: NextRequest) {
       `upload=${tUpload}ms | map=${tMap}ms | convert=${tConvert}ms | total=${totalMs}ms`
     );
 
-    // METRICS
     endRequestMetrics(ctx, {
       engine: used,
       phase_ms: { upload: tUpload, map: tMap, convert: tConvert, total: totalMs },
       io_bytes: { input_docx: inputBytes, output_pdf: outputBytes },
     });
 
-    // STREAM & cleanup
     const nodeStream = fs.createReadStream(pdfPath);
     const cleanup = async () => {
       try { if (templatePath) await fsp.rm(path.dirname(templatePath), { recursive: true, force: true }); } catch {}

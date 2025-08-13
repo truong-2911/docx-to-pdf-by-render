@@ -9,27 +9,26 @@ import { imageSize as sizeOf } from "image-size";
 import sharp from "sharp";
 
 /**
- * Tối ưu tải & nhúng ảnh cho pha "map":
- * - HTTP keep-alive + maxSockets cao
+ * Tối ưu pha "map" ảnh:
+ * - Keep-Alive + maxSockets cao
  * - Prefetch ảnh song song (giới hạn concurrency)
  * - Cache theo URL (kể cả in-flight)
- * - NEW: Inline resize/re-encode ảnh trong getImage (giảm map & convert)
+ * - Inline resize/re-encode bằng sharp (giảm map & convert)
  *
  * ENV (tuỳ chọn):
  *   IMG_HTTP_TIMEOUT_MS=60000
  *   IMG_MAX_SOCKETS=256
  *   IMG_CACHE_MAX_ENTRIES=2000
  *   IMG_CACHE_TTL_MS=600000
- *   IMG_PREFETCH=true|false                 (mặc định true)
+ *   IMG_PREFETCH=true|false
  *   IMG_PREFETCH_CONCURRENCY=16
- *
- *   IMG_INLINE_RESIZE=true|false           (mặc định true)
+ *   IMG_INLINE_RESIZE=true|false
  *   IMG_RESIZE_MAX_W=1800
  *   IMG_RESIZE_MAX_H=1800
- *   IMG_RESIZE_QUALITY=78                  (1..100)
- *   IMG_MIN_BYTES_TO_TOUCH=200000          (chỉ nén ảnh > 200KB)
- *   IMG_CONVERT_PNG_PHOTOS=true|false      (mặc định true: PNG không alpha -> JPEG)
- *   IMG_PREFER_WEBP=false|true             (nếu true: dùng WebP thay JPEG)
+ *   IMG_RESIZE_QUALITY=78
+ *   IMG_MIN_BYTES_TO_TOUCH=200000
+ *   IMG_CONVERT_PNG_PHOTOS=true|false
+ *   IMG_PREFER_WEBP=false|true
  */
 
 const HTTP_TIMEOUT_MS = Number(process.env.IMG_HTTP_TIMEOUT_MS || 60000);
@@ -39,7 +38,6 @@ const CACHE_TTL = Number(process.env.IMG_CACHE_TTL_MS || 10 * 60 * 1000);
 const PREFETCH_ENABLED = (process.env.IMG_PREFETCH ?? "true") !== "false";
 const PREFETCH_CONCURRENCY = Math.max(1, Number(process.env.IMG_PREFETCH_CONCURRENCY || 16));
 
-// Inline resize config
 const INLINE_RESIZE = (process.env.IMG_INLINE_RESIZE ?? "true") !== "false";
 const MAX_W = Number(process.env.IMG_RESIZE_MAX_W || 1800);
 const MAX_H = Number(process.env.IMG_RESIZE_MAX_H || 1800);
@@ -61,7 +59,7 @@ const httpClient = axios.create({
   validateStatus: (s) => s >= 200 && s < 300,
 });
 
-// ---- Cache theo URL (kèm TTL) + hợp nhất in-flight ----
+// ---- Cache URL (TTL) + hợp nhất in-flight ----
 type CacheEntry = { expiresAt: number; data?: Buffer; promise?: Promise<Buffer> };
 const imageCache = new Map<string, CacheEntry>();
 
@@ -71,12 +69,10 @@ function touchLRU(key: string) {
   imageCache.delete(key);
   imageCache.set(key, val);
 }
-
 function evictIfNeeded() {
   while (imageCache.size > CACHE_MAX) {
     const firstKey = imageCache.keys().next().value as string | undefined;
-    if (firstKey) imageCache.delete(firstKey);
-    else break;
+    if (firstKey) imageCache.delete(firstKey); else break;
   }
 }
 
@@ -109,7 +105,7 @@ export async function getHttpData(url: string, token = ""): Promise<Buffer> {
   }
 }
 
-// ---- Thu thập link ảnh từ JSON ----
+// ---- Thu thập link ảnh trong JSON ----
 function collectImageLinks(obj: any): string[] {
   const links = new Set<string>();
   const walk = (o: any) => {
@@ -139,7 +135,7 @@ async function prefetchImages(urls: string[], token = ""): Promise<void> {
   await Promise.all(Array.from({ length: N }, worker));
 }
 
-// ---- Xử lý inline resize/re-encode bằng sharp ----
+// ---- Inline resize/re-encode ----
 async function maybeTransformImage(input: Buffer): Promise<Buffer> {
   if (!INLINE_RESIZE) return input;
   if (!input || input.length < MIN_BYTES) return input;
@@ -147,20 +143,17 @@ async function maybeTransformImage(input: Buffer): Promise<Buffer> {
   let meta;
   try { meta = await sharp(input, { failOn: "none" }).metadata(); }
   catch { return input; }
-
   if (!meta?.width || !meta?.height) return input;
 
-  const isPhotoFormat = ["jpeg", "jpg", "webp", "png", "tiff"].includes(String(meta.format));
+  const isPhotoFormat = ["jpeg","jpg","webp","png","tiff"].includes(String(meta.format));
   if (!isPhotoFormat) return input;
 
   let pipeline = sharp(input, { failOn: "none" });
 
-  // Resize nếu lớn hơn ngưỡng
   if (meta.width > MAX_W || meta.height > MAX_H) {
     pipeline = pipeline.resize({ width: MAX_W, height: MAX_H, fit: "inside", withoutEnlargement: true });
   }
 
-  // Quyết định định dạng output
   let target = String(meta.format);
   if (CONVERT_PNG_PHOTOS && target === "png" && meta.hasAlpha !== true) {
     target = PREFER_WEBP ? "webp" : "jpeg";
@@ -172,25 +165,23 @@ async function maybeTransformImage(input: Buffer): Promise<Buffer> {
   else if (target === "tiff")             { target = "jpeg"; pipeline = pipeline.jpeg({ quality: QUALITY, mozjpeg: true }); }
 
   const out = await pipeline.toBuffer();
-  // Chỉ thay nếu thực sự nhỏ hơn đáng kể
   if (out.length <= input.length * 0.97) return out;
   return input;
 }
 
-// ---- Loại bỏ HTML trong chuỗi (như cũ) ----
+// ---- Loại bỏ HTML trong string (như cũ) ----
 export function replaceHtmlTags(obj: any) {
   const hasHtml = (s: string) => /<[^>]*>/.test(s);
   const htmlToText = (s: string) => s
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]*>/g, "");
   const walk = (o: any) => {
-    if (Array.isArray(o)) {
-      for (let i = 0; i < o.length; i++) {
-        const v = o[i];
-        if (typeof v === "string") { if (hasHtml(v)) o[i] = htmlToText(v); }
-        else if (v && typeof v === "object") walk(v);
-      }
-    } else if (o && typeof o === "object") {
+    if (Array.isArray(o)) for (let i = 0; i < o.length; i++) {
+      const v = o[i];
+      if (typeof v === "string") { if (hasHtml(v)) o[i] = htmlToText(v); }
+      else if (v && typeof v === "object") walk(v);
+    }
+    else if (o && typeof o === "object") {
       for (const k of Object.keys(o)) {
         const v = o[k];
         if (typeof v === "string") { if (hasHtml(v)) o[k] = htmlToText(v); }
@@ -202,11 +193,7 @@ export function replaceHtmlTags(obj: any) {
   return obj;
 }
 
-/**
- * Render dữ liệu vào DOCX template:
- *  - Prefetch ảnh (song song, keep-alive, cache)
- *  - Inline resize ảnh trong getImage để giảm map & convert
- */
+// ---- Render vào DOCX template ----
 export async function populateDataOnDocx({
   json, file, token = "",
 }: { json: any; file: Buffer; token?: string; }): Promise<Buffer> {
@@ -216,7 +203,6 @@ export async function populateDataOnDocx({
       const t0 = Date.now();
       await prefetchImages(allLinks, token);
       const dt = Date.now() - t0;
-      // eslint-disable-next-line no-console
       console.log(`[map-prefetch] urls=${allLinks.length} concurrency=${PREFETCH_CONCURRENCY} took=${dt}ms`);
     }
   }
@@ -228,7 +214,7 @@ export async function populateDataOnDocx({
       const url = tagObj?.link || tagObj?.url || tagObj;
       if (typeof url !== "string") throw new Error("Invalid image tag: missing link");
       const buf = await getHttpData(url, token);
-      return maybeTransformImage(buf); // <<<<< INLINE RESIZE HERE
+      return maybeTransformImage(buf);
     },
     getSize: (img: Buffer, tagObj: any) => {
       const meta = sizeOf(img);
@@ -243,12 +229,7 @@ export async function populateDataOnDocx({
 
   const imageModule = new ImageModule(opts);
   const zip = new PizZip(file);
-  const doc = new Docxtemplater(zip, {
-    modules: [imageModule],
-    paragraphLoop: true,
-    linebreaks: true,
-  });
-
+  const doc = new Docxtemplater(zip, { modules: [imageModule], paragraphLoop: true, linebreaks: true });
   await doc.renderAsync(json);
   return doc.getZip().generate({ type: "nodebuffer", compression: "DEFLATE" });
 }

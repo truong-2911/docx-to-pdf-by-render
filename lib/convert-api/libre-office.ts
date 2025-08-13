@@ -1,10 +1,10 @@
-// lib/convert-api/libre-office.ts
 import { spawn, execFile } from "node:child_process";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
 import fsp from "fs/promises";
 import pidusage from "pidusage";
+// @ts-ignore
 import pidtree from "pidtree";
 
 const sofficeCmd =
@@ -18,12 +18,10 @@ let PERSISTENT_LO_PROFILE: string | null = null;
 type LOMetrics = { vcpuMinutes: number; peakBytes: number };
 
 async function getDescendantPids(rootPid: number): Promise<number[]> {
-  // 1) cross-platform
   try {
     const pids = (await pidtree(rootPid, { root: true })) as number[];
     if (Array.isArray(pids) && pids.length >= 1) return pids;
   } catch {}
-  // 2) Windows fallback (PowerShell Get-CimInstance)
   if (process.platform === "win32") {
     try {
       const stdout = await new Promise<string>((resolve, reject) => {
@@ -54,7 +52,6 @@ async function getDescendantPids(rootPid: number): Promise<number[]> {
       return Array.from(all);
     } catch {}
   }
-  // 3) Bất đắc dĩ
   return [rootPid];
 }
 
@@ -68,7 +65,7 @@ async function runSofficeMeasured(args: string[], opts: any = {}): Promise<LOMet
 
     const sample = async () => {
       const now = Date.now();
-      const dt = Math.max(1, now - last); // ms
+      const dt = Math.max(1, now - last);
       last = now;
       try {
         const pids = await getDescendantPids(child.pid || 0);
@@ -77,8 +74,8 @@ async function runSofficeMeasured(args: string[], opts: any = {}): Promise<LOMet
         let sumMem = 0;
         for (const k of Object.keys(stats)) {
           const s: any = (stats as any)[k];
-          sumPct += s?.cpu || 0;      // %
-          sumMem += s?.memory || 0;   // bytes
+          sumPct += s?.cpu || 0;
+          sumMem += s?.memory || 0;
         }
         if (sumMem > peakLO) peakLO = sumMem;
         cpuMsTotal += Math.round(dt * (sumPct / 100));
@@ -86,7 +83,7 @@ async function runSofficeMeasured(args: string[], opts: any = {}): Promise<LOMet
     };
 
     const iv = setInterval(sample, 250);
-    sample(); // lấy ngay 1 mẫu đầu
+    sample();
 
     let stderr = "";
     child.stderr.on("data", (d) => (stderr += d.toString()));
@@ -101,10 +98,6 @@ async function runSofficeMeasured(args: string[], opts: any = {}): Promise<LOMet
   });
 }
 
-/**
- * Fallback cũ: nhận Buffer -> ghi ra file tạm -> convert
- * (giữ lại để tương thích; KHÔNG tối ưu RAM bằng convertDocxFile)
- */
 export async function convertDocxToPdf(inputDocxBuffer: Buffer) {
   const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), "docx2pdf-"));
   const inputPath = path.join(workDir, "input.docx");
@@ -112,10 +105,8 @@ export async function convertDocxToPdf(inputDocxBuffer: Buffer) {
   return convertDocxFile(inputPath);
 }
 
-/** Khuyên dùng: truyền đường dẫn file trực tiếp */
 export async function convertDocxFile(inputPath: string) {
   const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), "docx2pdf-"));
-
   if (!PERSISTENT_LO_PROFILE) {
     PERSISTENT_LO_PROFILE = await fsp.mkdtemp(path.join(os.tmpdir(), "lo-profile-"));
   }
@@ -130,10 +121,8 @@ export async function convertDocxFile(inputPath: string) {
   ];
 
   const lo = await runSofficeMeasured(args);
-
   const files = await fsp.readdir(workDir);
   const pdf = files.find((f) => f.toLowerCase().endsWith(".pdf"));
   if (!pdf) throw new Error("No PDF produced by LibreOffice");
-
   return { pdfPath: path.join(workDir, pdf), workDir, lo };
 }
