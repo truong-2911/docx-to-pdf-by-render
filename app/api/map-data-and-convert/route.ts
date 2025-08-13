@@ -10,6 +10,7 @@ import { populateDataOnDocx } from "@/lib/convert-api/docx-to-pdf/document-helpe
 import { beginRequestMetrics, endRequestMetrics, mb } from "@/lib/metrics";
 import { convertViaJodPath } from "@/lib/convert-api/jod";
 import { convertDocxFile } from "@/lib/convert-api/libre-office";
+import { requireAuth } from "@/lib/utils/api-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +33,9 @@ export function OPTIONS() {
 }
 
 export async function POST(req: NextRequest) {
+
+  const deny = requireAuth(req);
+  if (deny) return deny;
   const ctx = beginRequestMetrics("map-data-and-convert");
   const REQUIRE_JOD = process.env.REQUIRE_JOD === "true";
 
