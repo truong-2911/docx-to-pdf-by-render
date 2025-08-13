@@ -126,6 +126,7 @@ export async function POST(req: NextRequest) {
         contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         token,
         addRandomSuffix: false,
+        allowOverwrite: true
       });
 
       const stat = await fsp.stat(finalDocxPath);
@@ -204,6 +205,7 @@ export async function POST(req: NextRequest) {
       contentType: "application/pdf",
       token,
       addRandomSuffix: false,
+      allowOverwrite: true
     });
 
     // Cleanup
