@@ -1,4 +1,3 @@
-// app/api/map-data-and-convert/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import fsp from "fs/promises";
@@ -12,6 +11,7 @@ import { convertDocxFile } from "@/lib/convert-api/libre-office";
 import { requireAuth, handlePreflight } from "@/lib/utils/api-guard";
 import { acquire, release } from "@/lib/utils/concurrency";
 import { put } from "@vercel/blob";
+import { compressDocxBuffer } from "@/lib/convert-api/docx-to-pdf/compress-docx";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +19,6 @@ export const dynamic = "force-dynamic";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-  // 👇 thêm Authorization để client có thể gửi Bearer token qua CORS
   "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, x-vercel-protection-bypass",
 } as const;
 
@@ -34,6 +33,20 @@ export function OPTIONS(req: NextRequest) {
   return handlePreflight(req) ?? new NextResponse(null, { status: 204, headers: corsHeaders });
 }
 
+/** Tạo key upload an toàn: <BLOB_PREFIX>/<slug>.<ext> */
+function toBlobKey(rawName?: string, fallback?: string, ext: "pdf" | "docx" = "pdf") {
+  const base0 = (rawName || fallback || "output").replace(/\.[^.]+$/i, "");
+  const safe =
+    base0
+      .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[-_.]+|[-_.]+$/g, "")
+      .slice(0, 120) || "file";
+  const prefix = process.env.BLOB_PREFIX || "pdf/";
+  return `${prefix}${safe}.${ext}`;
+}
+
 export async function POST(req: NextRequest) {
   const deny = requireAuth(req);
   if (deny) return deny;
@@ -44,27 +57,31 @@ export async function POST(req: NextRequest) {
 
   let templatePath: string | undefined;
   let mappedPath: string | undefined;
+  let preparedPath: string | undefined;
   let workDir: string | undefined;
 
   const t0 = Date.now();
-  let tUpload = 0, tMap = 0, tConvert = 0;
+  let tUpload = 0, tMap = 0, tConvert = 0, tCompress = 0;
   let inputBytes = 0, outputBytes = 0;
-  let used: "jod" | "lo" = "jod";
+  let used: "jod" | "lo" | "none" = "jod";
 
   try {
-    // 1) UPLOAD multipart
-    const { fields, file } = await parseMultipartToTmp(req, { fieldName: "file", maxFileSize: 200 * 1024 * 1024 });
+    // 1) Nhận multipart
+    const { fields, file } = await parseMultipartToTmp(req, {
+      fieldName: "file",
+      maxFileSize: 200 * 1024 * 1024,
+    });
     tUpload = Date.now() - t0;
+
     if (!file) return json(400, { error: "file (template docx) is required" });
     if (!fields["data"]) return json(400, { error: "data (JSON string) is required" });
+
+    const outType = String(fields["type"] || "pdf").toLowerCase() === "docx" ? "docx" : "pdf";
 
     inputBytes = file.size;
     templatePath = file.path;
 
-    const rawName = (fields["name"] || file.filename || "output.docx").replace(/\.docx?$/i, "");
-    const pdfKey = `${(process.env.BLOB_PREFIX || "pdf/")}${rawName}.pdf`;
-
-    // 2) MAP
+    // 2) MAP dữ liệu vào DOCX (ra Buffer)
     const t1 = Date.now();
     const templateBuf = await fsp.readFile(templatePath);
     const jsonObj = replaceHtmlTags(JSON.parse(fields["data"]));
@@ -73,8 +90,82 @@ export async function POST(req: NextRequest) {
     await fsp.writeFile(mappedPath, mappedBuf);
     tMap = Date.now() - t1;
 
-    // 3) CONVERT (ưu tiên JOD)
-    const t2 = Date.now();
+    // 3a) Nếu client yêu cầu DOCX: (tuỳ chọn) nén ảnh rồi upload DOCX lên Blob
+    if (outType === "docx") {
+      const enableCompress = (process.env.ENABLE_DOCX_COMPRESSION ?? "true") !== "false";
+      const threshold = Number(process.env.DOCX_COMPRESS_THRESHOLD_MB || 10) * 1024 * 1024;
+
+      let finalDocxPath = mappedPath;
+      if (enableCompress && mappedBuf.length > threshold) {
+        const t2 = Date.now();
+        const { buffer: outBuf, changed } = await compressDocxBuffer(mappedBuf, {
+          maxWidth: Number(process.env.IMG_MAX_WIDTH || 1800),
+          maxHeight: Number(process.env.IMG_MAX_HEIGHT || 1800),
+          quality: Number(process.env.IMG_QUALITY || 75),
+          convertPngPhotos: true,
+          preferWebP: false,
+          minBytesToTouch: Number(process.env.IMG_MIN_BYTES || 200000),
+        });
+        tCompress = Date.now() - t2;
+
+        if (changed > 0) {
+          preparedPath = path.join(path.dirname(mappedPath), "prepared.docx");
+          await fsp.writeFile(preparedPath, outBuf);
+          finalDocxPath = preparedPath;
+        }
+      }
+
+      // Upload DOCX
+      const key = toBlobKey(fields["name"], file.filename, "docx");
+      const nodeStream = fs.createReadStream(finalDocxPath!);
+      const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
+
+      const token = process.env.BLOB_READ_WRITE_TOKEN;
+      const { url } = await put(key, webStream, {
+        access: "public",
+        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        token,
+        addRandomSuffix: false,
+      });
+
+      const stat = await fsp.stat(finalDocxPath);
+      outputBytes = stat.size;
+      used = "none";
+
+      const totalMs = Date.now() - t0;
+      console.log(
+        `[map+docx] in=${mb(inputBytes)}MB out=${mb(outputBytes)}MB | upload=${tUpload}ms | map=${tMap}ms | ` +
+        `compress=${tCompress}ms | total=${totalMs}ms`
+      );
+
+      endRequestMetrics(ctx, {
+        engine: used,
+        phase_ms: { upload: tUpload, map: tMap, compress: tCompress, total: totalMs },
+        io_bytes: { input_docx: inputBytes, output_docx: outputBytes },
+      });
+
+      // Dọn tạm
+      try { if (templatePath) await fsp.rm(path.dirname(templatePath), { recursive: true, force: true }); } catch {}
+      try { if (mappedPath) await fsp.unlink(mappedPath); } catch {}
+      try { if (preparedPath) await fsp.unlink(preparedPath); } catch {}
+
+      const filename = key.split("/").pop()!;
+      const downloadUrl = `${url}?download=${encodeURIComponent(filename)}`;
+
+      return json(200, {
+        ok: true,
+        engine: used,
+        type: "docx",
+        url,              // xem trực tiếp
+        downloadUrl,      // ép tải về với đúng tên
+        key,
+        bytes: { input_docx: inputBytes, output_docx: outputBytes },
+        timings: { upload: tUpload, map: tMap, compress: tCompress, total: totalMs },
+      });
+    }
+
+    // 3b) Nếu client yêu cầu PDF: convert như cũ (ưu tiên JOD)
+    const t3 = Date.now();
     let pdfPath: string;
     try {
       const out = await convertViaJodPath(mappedPath);
@@ -85,7 +176,7 @@ export async function POST(req: NextRequest) {
       const out = await convertDocxFile(mappedPath);
       pdfPath = out.pdfPath; workDir = out.workDir; used = "lo";
     }
-    tConvert = Date.now() - t2;
+    tConvert = Date.now() - t3;
 
     const stat = await fsp.stat(pdfPath);
     outputBytes = stat.size;
@@ -102,42 +193,42 @@ export async function POST(req: NextRequest) {
       io_bytes: { input_docx: inputBytes, output_pdf: outputBytes },
     });
 
-    // 4) UPLOAD TO VERCEL BLOB (STREAM) — không đọc vào RAM
-    // convert Node stream -> Web ReadableStream
+    // Upload PDF
+    const key = toBlobKey(fields["name"], file.filename, "pdf");
     const nodeStream = fs.createReadStream(pdfPath);
     const webStream = Readable.toWeb(nodeStream) as unknown as ReadableStream;
+    const token = process.env.BLOB_READ_WRITE_TOKEN;
 
-    const token = process.env.BLOB_READ_WRITE_TOKEN; // bắt buộc ngoài Vercel
-    const { url } = await put(pdfKey, webStream, {
+    const { url } = await put(key, webStream, {
       access: "public",
       contentType: "application/pdf",
       token,
-      // nếu muốn ghi đè tên file cũ
       addRandomSuffix: false,
-      // hoặc: allowOverwrite: true,  (cũng OK, nhưng addRandomSuffix:false đủ dùng)
-      // cacheControl: "public, max-age=31536000, immutable",
     });
 
-    // 5) CLEANUP file tạm sau khi upload xong
+    // Cleanup
     try { if (templatePath) await fsp.rm(path.dirname(templatePath), { recursive: true, force: true }); } catch {}
     try { if (mappedPath) await fsp.unlink(mappedPath); } catch {}
     try { if (workDir) await fsp.rm(workDir, { recursive: true, force: true }); } catch {}
 
-    // 6) TRẢ JSON (URL blob)
-    const serverTiming = `upload;dur=${tUpload}, map;dur=${tMap}, convert;dur=${tConvert}, total;dur=${totalMs}`;
+    const filename = key.split("/").pop()!;
+    const downloadUrl = `${url}?download=${encodeURIComponent(filename)}`;
+
     return json(200, {
       ok: true,
       engine: used,
+      type: "pdf",
       url,
-      key: pdfKey,
+      downloadUrl,
+      key,
       bytes: { input_docx: inputBytes, output_pdf: outputBytes },
       timings: { upload: tUpload, map: tMap, convert: tConvert, total: totalMs },
-    }, { "Server-Timing": serverTiming });
+    });
 
   } catch (err: any) {
-    endRequestMetrics(ctx, { engine: used, error: err?.message ?? "unknown", phase_ms: { upload: tUpload, map: tMap, convert: tConvert } });
+    endRequestMetrics(ctx, { engine: used, error: err?.message ?? "unknown", phase_ms: { upload: tUpload, map: tMap, convert: tConvert, compress: tCompress } });
     console.error("[/api/map-data-and-convert] error:", err?.message || err);
-    const partial = `upload;dur=${tUpload}, map;dur=${tMap}, convert;dur=${tConvert}`;
+    const partial = `upload;dur=${tUpload}, map;dur=${tMap}, convert;dur=${tConvert}, compress;dur=${tCompress}`;
     return json(500, { error: err?.message || "Map & conversion failed" }, { "Server-Timing": partial });
   } finally {
     release("map+convert");
