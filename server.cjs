@@ -6,5 +6,4 @@ try {
   console.warn("[keep-alive] disabled:", e && e.message);
 }
 
-// Chạy server Next.js đã build ở chế độ standalone
 require("./.next/standalone/server.js");
