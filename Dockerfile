@@ -4,30 +4,31 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN npm run build   # tạo .next/standalone
+# Build Next.js ở chế độ standalone
+RUN npm run build
 
 # ---- runner
 FROM node:20-bookworm AS runner
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-ENV HOSTNAME=0.0.0.0
-ENV PORT=3000
-ENV DEBIAN_FRONTEND=noninteractive
-ENV HOME=/tmp
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000 \
+    DEBIAN_FRONTEND=noninteractive \
+    HOME=/tmp
 WORKDIR /app
 
-# LibreOffice + fonts
-RUN apt-get update && apt-get install -y -q --no-install-recommends \
+# LibreOffice + fonts (đủ để convert + hiển thị font phổ biến)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-writer \
     fonts-dejavu fonts-liberation fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
-# Copy artefacts
-COPY --from=builder /app/.next/standalone ./.next/standalone
+# Copy artefacts của Next (standalone)
+# Lưu ý: copy cả thư mục standalone vào root để có /app/server.js
+COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
-COPY server.cjs ./server.cjs
-COPY lib/keep-alive.cjs ./lib/keep-alive.cjs
 
 EXPOSE 3000
-CMD ["node","server.cjs"] 
+# Chạy server standalone của Next
+CMD ["node", "server.js"]
